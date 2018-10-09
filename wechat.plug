@@ -1,0 +1,13 @@
+[Core]
+name = newchat
+module = newchat
+
+[Documentation]
+description = wechat backend
+
+[Python]
+version = 3
+
+[Errbot]
+min = 3.2.1
+max = 5.1.3
