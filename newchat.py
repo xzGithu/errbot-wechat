@@ -1,3 +1,4 @@
+#author:xzgithu
 import logging
 import itchat
 from itchat.content import *
