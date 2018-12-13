@@ -1,4 +1,3 @@
-#author:xzgithu
 import logging
 import itchat
 from itchat.content import *
@@ -6,6 +5,7 @@ import os,sys
 import signal
 import json
 import time
+import sqlite3
 
 
 
@@ -68,22 +68,20 @@ class wechatPerson(Person):
     @property
     def person(self):
         return "%s" % self.username
-
-
 class wechatRoomOccupant(RoomOccupant, wechatPerson):
     """
     This class represents a person inside a MUC.
     """
-    def __init__(self, sc, userid, roomid, bot):
-        super().__init__(sc, userid, roomid)
-        self._room = QqRoom(gid=roomid, bot=bot)
+    def __init__(self, userid, roomid,):
+        super().__init__(userid, roomid)
+        self._room = WechatRoom(name=roomid)
 
     @property
     def room(self):
         return self._room
 
     def __unicode__(self):
-        return "#%s/%s" % (self._room.name, self.username)
+        return "%s" % (self._room.name)
 
     def __str__(self):
         return self.__unicode__()
@@ -92,9 +90,11 @@ class wechatBackend(ErrBot):
         super().__init__(config)
         identity = config.BOT_IDENTITY
         self.adminuser = config.BOT_ADMINS
-        self.usrname=None
+        #self.usrname=None
         itchat.auto_login(hotReload=True)
         self.roomlist,self.myfrilist=self.friendlist()
+        #print (self.roomlist)
+        #print (self.myfrilist)
     def friendlist(self):
         qun,users=itchat.get_contact(update=True)
         return qun,users
@@ -108,15 +108,23 @@ class wechatBackend(ErrBot):
             aaa=itchat.search_friends(userName=mess['frm1'])
             mess['frm']=aaa["NickName"]
             mess['send']=aaa["RemarkName"] if aaa["RemarkName"] else aaa["NickName"]
+            mess['room']=mess['send']
         except TypeError:
-		    try:
+            try:
                 chatroom=itchat.search_chatrooms(userName=mess['frm1'])
                 mess['frm']=chatroom["NickName"]
+                mess['room']=mess['frm']
                 roommem=itchat.search_friends(userName=msg["ActualUserName"])
                 mess['send']=roommem["RemarkName"] if roommem["RemarkName"] else roommem["NickName"]
             except:
+                chatroom=itchat.search_chatrooms(userName=mess['frm1'])
+                mess['room']=chatroom["NickName"]
                 mess['frm']=msg['FromUserName']
                 mess['send']="notfriend"
+        if msg['FromUserName'].startswith('@@'):
+            mess['type']='qun'
+        else:
+            mess['type']='ren'
         log.info(mess)
         self.build_msg(mess)
             
@@ -128,17 +136,25 @@ class wechatBackend(ErrBot):
         sendu=msg['send']
         ttuser=msg['frm1']
         touser=msg['to']
+        room=msg['room']
         msgs=Message(text)
-        msgs.frm=wechatPerson(sendu,touser)
-        self.usrname=ttuser
+        if msg["type"]=="ren":
+            msgs.frm=wechatPerson(sendu,touser)
+        else:
+            msgs.frm=wechatRoomOccupant(userid=sendu,roomid=room)
+        #self.usrname=ttuser
         if ttuser.startswith('@@'):
-            msgs.to=wechatPerson(userid=ttuser)
+            #msgs.to=wechatPerson(userid=ttuser)
+            msgs.to=WechatRoom(name=room)
             msgs.id="group"
+            log.info(msgs.to.name)
         else:
             msgs.to=wechatPerson(userid=ttuser)
             msgs.id="user"
+        msgs.send=sendu
         log.info('---------------- %s---------%s' %(msgs.to,msgs.frm))
         log.info('ssssssssssssssss %s'%msgs)
+        log.info('ssssssssssssssss %s'%msgs.is_group)
         self.callback_message(msgs)
     def getlogs(self):
         self.logs=None
@@ -156,15 +172,40 @@ class wechatBackend(ErrBot):
         @itchat.msg_register(itchat.content.TEXT,isGroupChat=True)
         def wechat_reply(msg):
             self.logs=msg
+            if msg.text:
+                if "shutdown --confirm" in msg.text:
+                    print (self.adminuser)
+                    itchat.send("已关闭进程",toUserName=self.adminuser)
+                    time.sleep(5)
+                    os.kill(os.getpid(), signal.SIGKILL)
             self.msg_event_handler(self.logs)
     def serve_once(self):
         log.info("Verifying authentication token")
-        #self.connect_callback()
-        #self.reset_reconnection_count()
+        con=sqlite3.connect('/soft/webui/db.sqlite3')
+        cur = con.cursor()
+        cur.execute("select name from ui_qun")
+        rooms=cur.fetchall()
+        rooms=[i[0] for i in rooms]
+        cur.execute("select descname from ui_person")
+        friends=cur.fetchall()
+        friends=[i[0] for i in friends]
         myname=itchat.search_friends()
         self.bot_identifier = wechatPerson(myname['NickName'])
         self.connect_callback()
         self.reset_reconnection_count()
+        for i in self.roomlist:
+            if i['NickName'] not in rooms:
+                sql="insert into ui_qun (name) values ('"+i['NickName']+"')"
+                cur.execute(sql)
+        for i in self.myfrilist:
+            if i["RemarkName"] not in friends and i["NickName"] not in friends:
+                if i["RemarkName"]!='':
+                    sql="insert into ui_person (descname) values ('"+i['RemarkName']+"')"
+                else:
+                    sql="insert into ui_person (descname) values ('"+i['NickName']+"')"
+                cur.execute(sql)
+        con.commit()
+        con.close()
         try:
             log.info('waiting')
             while True:
@@ -184,24 +225,27 @@ class wechatBackend(ErrBot):
         log.info(msg.frm)
         log.info(msg.to)
         log.debug(body)
-        print (msg.to.userid)
-        print (type(msg.to.userid))
-        toname=msg.to.username
+        #print (msg.to.userid)
+        #print (type(msg.to.userid))
+        try:
+            toname=msg.to.username
+        except:
+            toname=msg.to
         log.info(toname)
-        if msg.to.userid.startswith('@@'):
-            itchat.send(body,toUserName=msg.to.userid)
-        else:
-            try:
-                anname=itchat.search_chatrooms(name=toname)
+        #if msg.to.userid.startswith('@@'):
+        #    itchat.send(body,toUserName=msg.to.userid)
+        #else:
+        try:
+            anname=itchat.search_chatrooms(name=toname)
+            sendto=anname[0].userName
+            itchat.send(body,toUserName=sendto)
+        except:
+            anname=itchat.search_friends(nickName=toname)
+            if anname:
                 sendto=anname[0].userName
                 itchat.send(body,toUserName=sendto)
-            except:
-                anname=itchat.search_friends(nickName=toname)
-                if anname:
-                    sendto=anname[0].userName
-                    itchat.send(body,toUserName=sendto)
-                else:
-                    log.error("没有找到用户或组")
+            else:
+                log.error("没有找到用户或组%s"%toname)
         log.debug('sended')
 
     def message_cut(self,msg):
@@ -224,8 +268,9 @@ class wechatBackend(ErrBot):
         response = self.build_message(text)
         response.frm = self.bot_identifier
         log.info('response.frm')
-        if msg.to.username.startswith('@@'):
-            response.to = msg.to
+        #if msg.to.username.startswith('@@'):
+        if msg.id=="group":
+            response.to = msg.to.name
         else:
             response.to = msg.frm
         log.debug(response.to)
@@ -256,7 +301,7 @@ class wechatBackend(ErrBot):
 
 
 
-class QqRoom(Room):
+class WechatRoom(Room):
     def invite(self, *args) -> None:
         log.error('Not implemented')
     @property
@@ -290,18 +335,14 @@ class QqRoom(Room):
         log.error('Not implemented')
         return True
 
-    def __init__(self, name=None ,gid=None, bot=None):
-        if name is not None:
-            self._name = name
-        else:
-            self._name = bot.groupid_to_groupname(gid)
-        self._bot=bot
-        self.sc=bot.sc
+    def __init__(self, name=None ,roomid=None, bot=None):
+        self._name = name
+    @property
     def name(self):
-        print (name)
+        print (self._name)
         return self._name
 
     def __str__(self):
-        return "#%s" %self.name
+        return self._name
     def __eq__(self, other):
         return other.name == self.name
